@@ -1,0 +1,543 @@
+
+module tb_ai_riscv_soc;
+
+    // ========================================================
+    // MAIN DUT SIGNALS
+    // ========================================================
+    logic        clock;
+    logic        reset;
+    logic [31:0] final_result;
+
+    // ========================================================
+    // DUT
+    // ========================================================
+    SOC_TOP dut (
+
+        .clock(clock),
+        .reset(reset),
+        .final_result(final_result)
+    );
+
+
+
+    // ========================================================
+    // CLOCK
+    // ========================================================
+    initial
+        clock = 1'b0;
+
+    always #5
+        clock = ~clock;
+
+
+
+    // ========================================================
+    // TEST MODULE SIGNALS
+    // ========================================================
+
+    // MAC ARRAY
+    logic        mac_clk;
+    logic        mac_rst;
+    logic        mac_en;
+
+    logic [7:0]  ma0,ma1,ma2,ma3;
+    logic [7:0]  mb0,mb1,mb2,mb3;
+
+    logic [31:0] mac_sum;
+
+    // SOFTMAX
+    logic signed [15:0] ss0,ss1,ss2,ss3;
+    logic [7:0] sw0,sw1,sw2,sw3;
+
+    // ATTENTION ENGINE
+    logic        ae_clk;
+    logic        ae_rst;
+    logic        ae_start;
+
+    logic [7:0] aq0,aq1,aq2,aq3;
+
+    logic [31:0] ae_out;
+    logic        ae_done;
+
+    // ALU DECODER
+    logic [6:0] dec_op;
+    logic [2:0] dec_f3;
+    logic [6:0] dec_f7;
+
+    logic [3:0] dec_ctrl;
+
+    logic dec_mac;
+    logic dec_attn;
+
+    // FORWARDING UNIT
+    logic [4:0] fw_rs1, fw_rs2;
+    logic [4:0] fw_exmem_rd, fw_memwb_rd;
+
+    logic fw_exmem_rw;
+    logic fw_memwb_rw;
+
+    logic [1:0] fw_A, fw_B;
+
+    // HAZARD UNIT
+    logic [4:0] hz_rs1, hz_rs2, hz_rd;
+
+    logic hz_memread;
+
+    logic hz_stall;
+    logic hz_pcwrite;
+
+    // PADFRAME
+    logic pclk;
+    logic prst_n;
+
+    logic [7:0] presult;
+
+
+
+    // ========================================================
+    // MODULE INSTANTIATIONS
+    // ========================================================
+
+    AI_MAC_ARRAY mac_ut (
+
+        .clock(mac_clk),
+        .reset(mac_rst),
+        .enable(mac_en),
+
+        .a0(ma0),
+        .a1(ma1),
+        .a2(ma2),
+        .a3(ma3),
+
+        .b0(mb0),
+        .b1(mb1),
+        .b2(mb2),
+        .b3(mb3),
+
+        .final_sum(mac_sum)
+    );
+
+
+
+    SOFTMAX_APPROX sm_ut (
+
+        .s0(ss0),
+        .s1(ss1),
+        .s2(ss2),
+        .s3(ss3),
+
+        .w0(sw0),
+        .w1(sw1),
+        .w2(sw2),
+        .w3(sw3)
+    );
+
+
+
+    ATTENTION_ENGINE ae_ut (
+
+        .clock(ae_clk),
+        .reset(ae_rst),
+
+        .attn_start(ae_start),
+
+        .q0(aq0),
+        .q1(aq1),
+        .q2(aq2),
+        .q3(aq3),
+
+        .k00(8'd1), .k01(8'd1), .k02(8'd1), .k03(8'd1),
+        .k10(8'd1), .k11(8'd1), .k12(8'd1), .k13(8'd1),
+        .k20(8'd1), .k21(8'd1), .k22(8'd1), .k23(8'd1),
+        .k30(8'd1), .k31(8'd1), .k32(8'd1), .k33(8'd1),
+
+        .v00(8'd10), .v01(8'd0), .v02(8'd0), .v03(8'd0),
+        .v10(8'd0),  .v11(8'd0), .v12(8'd0), .v13(8'd0),
+        .v20(8'd0),  .v21(8'd0), .v22(8'd0), .v23(8'd0),
+        .v30(8'd0),  .v31(8'd0), .v32(8'd0), .v33(8'd0),
+
+        .attn_out(ae_out),
+        .attn_done(ae_done)
+    );
+
+
+
+    ALU_DECODER dec_ut (
+
+        .opcode(dec_op),
+        .funct3(dec_f3),
+        .funct7(dec_f7),
+
+        .alu_control(dec_ctrl),
+
+        .use_ai_mac(dec_mac),
+        .use_attn(dec_attn)
+    );
+
+
+
+    FORWARDING_UNIT fw_ut (
+
+        .id_ex_rs1(fw_rs1),
+        .id_ex_rs2(fw_rs2),
+
+        .ex_mem_rd(fw_exmem_rd),
+        .ex_mem_regwrite(fw_exmem_rw),
+
+        .mem_wb_rd(fw_memwb_rd),
+        .mem_wb_regwrite(fw_memwb_rw),
+
+        .forwardA(fw_A),
+        .forwardB(fw_B)
+    );
+
+
+
+    HAZARD_UNIT hz_ut (
+
+        .if_id_rs1(hz_rs1),
+        .if_id_rs2(hz_rs2),
+
+        .id_ex_rd(hz_rd),
+        .id_ex_memread(hz_memread),
+
+        .stall(hz_stall),
+        .pc_write(hz_pcwrite)
+    );
+
+
+
+    SOC_TOP_PADFRAME pf_ut (
+
+        .PAD_CLK(pclk),
+        .PAD_RST_N(prst_n),
+
+        .PAD_RESULT(presult)
+    );
+
+
+
+    // ========================================================
+    // PASS / FAIL COUNTS
+    // ========================================================
+    integer pass_count = 0;
+    integer fail_count = 0;
+
+
+
+    // ========================================================
+    // CHECK TASK
+    // ========================================================
+    task automatic check;
+
+        input string test_name;
+        input [31:0] got;
+        input [31:0] expected;
+
+        begin
+
+            if (got === expected) begin
+
+                $display(
+                    "[PASS] %s got=%0d expected=%0d",
+                    test_name,
+                    got,
+                    expected
+                );
+
+                pass_count = pass_count + 1;
+
+            end
+            else begin
+
+                $display(
+                    "[FAIL] %s got=%0d expected=%0d",
+                    test_name,
+                    got,
+                    expected
+                );
+
+                fail_count = fail_count + 1;
+
+            end
+
+        end
+
+    endtask
+
+
+
+    // ========================================================
+    // TICK TASK
+    // ========================================================
+    task automatic tick;
+
+        input integer n;
+
+        integer j;
+
+        begin
+
+            for (j = 0; j < n; j = j + 1)
+                @(posedge clock);
+
+        end
+
+    endtask
+
+
+
+    // ========================================================
+    // MAIN TEST
+    // ========================================================
+    initial begin
+
+        $display("==============================================");
+        $display(" AI ACCELERATED RISC-V SOC TESTBENCH ");
+        $display("==============================================");
+
+
+
+        // ====================================================
+        // RESET
+        // ====================================================
+        reset = 1'b1;
+
+        tick(5);
+
+        check(
+            "Reset final_result",
+            final_result,
+            32'd0
+        );
+
+
+
+        // ====================================================
+        // CPU PROGRAM EXECUTION
+        // ====================================================
+        reset = 1'b0;
+
+        tick(15);
+
+        check(
+            "CPU ADD result",
+            final_result,
+            32'd15
+        );
+
+
+
+        // ====================================================
+        // MAC TEST
+        // ====================================================
+        mac_clk = 0;
+        mac_rst = 1;
+        mac_en  = 0;
+
+        ma0=8'd1;
+        ma1=8'd2;
+        ma2=8'd3;
+        ma3=8'd4;
+
+        mb0=8'd1;
+        mb1=8'd2;
+        mb2=8'd3;
+        mb3=8'd4;
+
+        #2 mac_rst = 0;
+        #2 mac_en  = 1;
+
+        #5 mac_clk = 1;
+        #5 mac_clk = 0;
+
+        mac_en = 0;
+
+        #1;
+
+        check(
+            "MAC ARRAY",
+            mac_sum,
+            32'd30
+        );
+
+
+
+        // ====================================================
+        // SOFTMAX TEST
+        // ====================================================
+        ss0 = 16'sd100;
+        ss1 = 16'sd50;
+        ss2 = 16'sd0;
+        ss3 = -16'sd50;
+
+        #1;
+
+        $display(
+            "Softmax weights: %0d %0d %0d %0d",
+            sw0,
+            sw1,
+            sw2,
+            sw3
+        );
+
+
+
+        // ====================================================
+        // ATTENTION ENGINE TEST
+        // ====================================================
+        ae_clk   = 0;
+        ae_rst   = 1;
+        ae_start = 0;
+
+        aq0 = 8'd1;
+        aq1 = 8'd1;
+        aq2 = 8'd1;
+        aq3 = 8'd1;
+
+        #2 ae_rst = 0;
+        #2 ae_start = 1;
+
+        repeat(3) begin
+
+            #5 ae_clk = 1;
+            #5 ae_clk = 0;
+
+        end
+
+        ae_start = 0;
+
+        #1;
+
+        if (ae_done) begin
+
+            $display("[PASS] ATTENTION ENGINE DONE");
+            pass_count = pass_count + 1;
+
+        end
+        else begin
+
+            $display("[FAIL] ATTENTION ENGINE");
+            fail_count = fail_count + 1;
+
+        end
+
+
+
+        // ====================================================
+        // ALU DECODER TEST
+        // ====================================================
+        dec_op = 7'b0110011;
+        dec_f3 = 3'b000;
+        dec_f7 = 7'b0000001;
+
+        #1;
+
+        check(
+            "ALU DECODER MUL",
+            {28'd0,dec_ctrl},
+            32'h6
+        );
+
+
+
+        // ====================================================
+        // FORWARDING UNIT TEST
+        // ====================================================
+        fw_rs1       = 5'd3;
+        fw_rs2       = 5'd4;
+
+        fw_exmem_rd  = 5'd3;
+        fw_exmem_rw  = 1'b1;
+
+        fw_memwb_rd  = 5'd0;
+        fw_memwb_rw  = 1'b0;
+
+        #1;
+
+        check(
+            "FORWARDING UNIT",
+            {30'd0,fw_A},
+            32'd2
+        );
+
+
+
+        // ====================================================
+        // HAZARD UNIT TEST
+        // ====================================================
+        hz_rs1      = 5'd3;
+        hz_rs2      = 5'd4;
+
+        hz_rd       = 5'd3;
+
+        hz_memread  = 1'b1;
+
+        #1;
+
+        check(
+            "HAZARD UNIT",
+            {31'd0,hz_stall},
+            32'd1
+        );
+
+
+
+        // ====================================================
+        // PADFRAME TEST
+        // ====================================================
+        pclk   = 0;
+        prst_n = 0;
+
+        #10;
+
+        prst_n = 1;
+
+        repeat(15) begin
+
+            #5 pclk = 1;
+            #5 pclk = 0;
+
+        end
+
+        #1;
+
+        check(
+            "PADFRAME RESULT",
+            {24'd0,presult},
+            32'd15
+        );
+
+
+
+        // ====================================================
+        // FINAL SUMMARY
+        // ====================================================
+        $display("==============================================");
+        $display(
+            "PASS=%0d FAIL=%0d",
+            pass_count,
+            fail_count
+        );
+        $display("==============================================");
+
+        $finish;
+
+    end
+
+
+
+    // ========================================================
+    // TIMEOUT
+    // ========================================================
+    initial begin
+
+        #10000;
+
+        $display("TIMEOUT");
+
+        $finish;
+
+    end
+
+endmodule
