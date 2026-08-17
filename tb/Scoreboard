@@ -1,0 +1,82 @@
+class riscv_soc_scoreboard extends uvm_scoreboard;
+
+    `uvm_component_utils(riscv_soc_scoreboard)
+
+    uvm_analysis_imp #(
+        riscv_soc_sequence_item,
+        riscv_soc_scoreboard
+    ) analysis_export;
+
+    int pass_count;
+    int fail_count;
+
+    function new(
+        string name = "riscv_soc_scoreboard",
+        uvm_component parent = null
+    );
+
+        super.new(name, parent);
+
+        analysis_export =
+            new("analysis_export", this);
+
+        pass_count = 0;
+        fail_count = 0;
+
+    endfunction
+
+    virtual function void write(
+        riscv_soc_sequence_item item
+    );
+
+        if (item.reset) begin
+
+            if (item.final_result === 32'd0) begin
+
+                pass_count++;
+
+                `uvm_info(
+                    "PASS",
+                    $sformatf(
+                        "RESET: final_result = %0d",
+                        item.final_result
+                    ),
+                    UVM_MEDIUM
+                )
+
+            end
+            else begin
+
+                fail_count++;
+
+                `uvm_error(
+                    "FAIL",
+                    $sformatf(
+                        "RESET: expected 0, got %0d",
+                        item.final_result
+                    )
+                )
+
+            end
+
+        end
+
+    endfunction
+
+    function void report_phase(uvm_phase phase);
+
+        super.report_phase(phase);
+
+        `uvm_info(
+            "SUMMARY",
+            $sformatf(
+                "PASS=%0d FAIL=%0d",
+                pass_count,
+                fail_count
+            ),
+            UVM_NONE
+        )
+
+    endfunction
+
+endclass
