@@ -1,0 +1,16 @@
+class riscv_soc_sequence_item extends uvm_sequence_item;
+
+    rand bit reset;
+
+    logic [31:0] final_result;
+
+    `uvm_object_utils_begin(riscv_soc_sequence_item)
+        `uvm_field_int(reset, UVM_ALL_ON)
+        `uvm_field_int(final_result, UVM_ALL_ON)
+    `uvm_object_utils_end
+
+    function new(string name = "riscv_soc_sequence_item");
+        super.new(name);
+    endfunction
+
+endclass
