@@ -1,0 +1,47 @@
+class riscv_soc_env extends uvm_env;
+
+    `uvm_component_utils(riscv_soc_env)
+
+    riscv_soc_agent      agent;
+    riscv_soc_scoreboard scoreboard;
+
+    function new(
+        string name = "riscv_soc_env",
+        uvm_component parent = null
+    );
+
+        super.new(name, parent);
+
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+
+        super.build_phase(phase);
+
+        agent =
+            riscv_soc_agent::type_id::create(
+                "agent",
+                this
+            );
+
+        scoreboard =
+            riscv_soc_scoreboard::type_id::create(
+                "scoreboard",
+                this
+            );
+
+        agent.is_active = UVM_ACTIVE;
+
+    endfunction
+
+    function void connect_phase(uvm_phase phase);
+
+        super.connect_phase(phase);
+
+        agent.monitor.analysis_port.connect(
+            scoreboard.analysis_export
+        );
+
+    endfunction
+
+endclass
