@@ -1,0 +1,31 @@
+class riscv_soc_sequence extends uvm_sequence #(riscv_soc_sequence_item);
+
+    `uvm_object_utils(riscv_soc_sequence)
+
+    function new(string name = "riscv_soc_sequence");
+        super.new(name);
+    endfunction
+
+    virtual task body();
+
+        riscv_soc_sequence_item req;
+
+        req = riscv_soc_sequence_item::type_id::create("req");
+
+        start_item(req);
+
+        req.reset = 1'b1;
+
+        finish_item(req);
+
+        req = riscv_soc_sequence_item::type_id::create("reset_release");
+
+        start_item(req);
+
+        req.reset = 1'b0;
+
+        finish_item(req);
+
+    endtask
+
+endclass
