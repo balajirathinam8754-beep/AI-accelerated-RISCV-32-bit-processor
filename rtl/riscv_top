@@ -1,0 +1,239 @@
+// ============================================================
+module RISC_V_CPU (
+
+    input  logic        clock,
+    input  logic        reset,
+
+    output logic [31:0] final_result
+);
+
+    // ========================================================
+    // PROGRAM COUNTER
+    // ========================================================
+    logic [31:0] PC;
+    logic [31:0] PC_NEXT;
+
+    always_ff @(posedge clock or posedge reset) begin
+
+        if (reset)
+            PC <= 32'd0;
+        else
+            PC <= PC_NEXT;
+
+    end
+
+    assign PC_NEXT = PC + 32'd4;
+
+
+
+    // ========================================================
+    // INSTRUCTION FETCH
+    // ========================================================
+    logic [31:0] instr;
+
+    INST_MEM imem (
+        .addr(PC),
+        .data(instr)
+    );
+
+
+
+    // ========================================================
+    // CONTROL SIGNALS
+    // ========================================================
+    logic regwrite;
+    logic alu_src;
+    logic memread;
+    logic memwrite;
+    logic branch;
+    logic jal;
+
+    CONTROL ctrl (
+
+        .opcode(instr[6:0]),
+
+        .regwrite(regwrite),
+        .alu_src (alu_src),
+
+        .memread (memread),
+        .memwrite(memwrite),
+
+        .branch(branch),
+        .jal   (jal)
+    );
+
+
+
+    // ========================================================
+    // REGISTER FILE
+    // ========================================================
+    logic [31:0] read1;
+    logic [31:0] read2;
+
+    logic [31:0] write_data_rf;
+
+    logic [31:0] x3_value;
+
+    REG_FILE rf (
+
+        .clock(clock),
+        .reset(reset),
+
+        .read_reg_num1(instr[19:15]),
+        .read_data1(read1),
+
+        .read_reg_num2(instr[24:20]),
+        .read_data2(read2),
+
+        .write_reg(instr[11:7]),
+        .write_data(write_data_rf),
+
+        .regwrite(regwrite),
+
+        .x3_out(x3_value)
+    );
+
+
+
+    // ========================================================
+    // IMMEDIATE GENERATOR
+    // ========================================================
+    logic [31:0] imm;
+
+    IMM_GEN immgen (
+
+        .instr(instr),
+        .imm_out(imm)
+    );
+
+
+
+    // ========================================================
+    // ALU DECODER
+    // ========================================================
+    logic [3:0] alu_control;
+
+    logic use_ai_mac;
+    logic use_attn;
+
+    ALU_DECODER aludec (
+
+        .opcode(instr[6:0]),
+        .funct3(instr[14:12]),
+        .funct7(instr[31:25]),
+
+        .alu_control(alu_control),
+
+        .use_ai_mac(use_ai_mac),
+        .use_attn  (use_attn)
+    );
+
+
+
+    // ========================================================
+    // ALU INPUT MUX
+    // ========================================================
+    logic [31:0] alu_in2;
+
+    assign alu_in2 =
+        alu_src ? imm : read2;
+
+
+
+    // ========================================================
+    // ALU OUTPUTS
+    // ========================================================
+    logic [31:0] alu_result;
+
+    logic zero_flag;
+    logic overflow;
+
+    logic attn_done;
+
+
+
+    // ========================================================
+    // ALU
+    // ========================================================
+    ALU alu (
+
+        .clock(clock),
+        .reset(reset),
+
+        .in1(read1),
+        .in2(alu_in2),
+
+        .alu_control(alu_control),
+
+        .use_ai_mac(use_ai_mac),
+        .use_attn(use_attn),
+
+        // ================================================
+        // QUERY VECTOR
+        // ================================================
+        .q0(8'd1),
+        .q1(8'd2),
+        .q2(8'd3),
+        .q3(8'd4),
+
+        // ================================================
+        // KEY MATRIX
+        // ================================================
+        .k00(8'd1), .k01(8'd2), .k02(8'd3), .k03(8'd4),
+        .k10(8'd2), .k11(8'd3), .k12(8'd4), .k13(8'd5),
+        .k20(8'd3), .k21(8'd4), .k22(8'd5), .k23(8'd6),
+        .k30(8'd4), .k31(8'd5), .k32(8'd6), .k33(8'd7),
+
+        // ================================================
+        // VALUE MATRIX
+        // ================================================
+        .v00(8'd10), .v01(8'd11), .v02(8'd12), .v03(8'd13),
+        .v10(8'd14), .v11(8'd15), .v12(8'd16), .v13(8'd17),
+        .v20(8'd18), .v21(8'd19), .v22(8'd20), .v23(8'd21),
+        .v30(8'd22), .v31(8'd23), .v32(8'd24), .v33(8'd25),
+
+        .alu_result(alu_result),
+
+        .zero_flag(zero_flag),
+        .overflow(overflow),
+
+        .attn_done(attn_done)
+    );
+
+
+
+    // ========================================================
+    // DATA MEMORY
+    // ========================================================
+    logic [31:0] mem_data;
+
+    DATA_MEM dmem (
+
+        .clock(clock),
+
+        .memwrite(memwrite),
+        .memread(memread),
+
+        .addr(alu_result),
+
+        .write_data(read2),
+
+        .read_data(mem_data)
+    );
+
+
+
+    // ========================================================
+    // WRITEBACK MUX
+    // ========================================================
+    assign write_data_rf =
+        memread ? mem_data : alu_result;
+
+
+
+    // ========================================================
+    // FINAL OUTPUT
+    // ========================================================
+    assign final_result = x3_value;
+
+endmodule
