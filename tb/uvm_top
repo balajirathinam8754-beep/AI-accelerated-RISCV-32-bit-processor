@@ -1,0 +1,34 @@
+module tb_top;
+
+    logic clock;
+
+    riscv_soc_if vif(clock);
+
+    RISC_V_CPU dut (
+        .clock(clock),
+        .reset(vif.reset),
+        .final_result(vif.final_result)
+    );
+
+    initial begin
+        clock = 1'b0;
+    end
+
+    always #5 clock = ~clock;
+
+    initial begin
+
+        uvm_config_db#(
+            virtual riscv_soc_if
+        )::set(
+            null,
+            "*",
+            "vif",
+            vif
+        );
+
+        run_test("riscv_soc_test");
+
+    end
+
+endmodule
