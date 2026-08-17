@@ -1,0 +1,63 @@
+class riscv_soc_monitor extends uvm_monitor;
+
+    `uvm_component_utils(riscv_soc_monitor)
+
+    virtual riscv_soc_if vif;
+
+    uvm_analysis_port #(riscv_soc_sequence_item) analysis_port;
+
+    function new(
+        string name = "riscv_soc_monitor",
+        uvm_component parent = null
+    );
+
+        super.new(name, parent);
+
+        analysis_port =
+            new("analysis_port", this);
+
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+
+        super.build_phase(phase);
+
+        if (!uvm_config_db#(virtual riscv_soc_if)::get(
+                this,
+                "",
+                "vif",
+                vif
+            )) begin
+
+            `uvm_fatal(
+                "NOVIF",
+                "Virtual interface not found"
+            )
+
+        end
+
+    endfunction
+
+    virtual task run_phase(uvm_phase phase);
+
+        riscv_soc_sequence_item item;
+
+        forever begin
+
+            @(posedge vif.clock);
+
+            item =
+                riscv_soc_sequence_item::type_id::create(
+                    "item"
+                );
+
+            item.reset       = vif.reset;
+            item.final_result = vif.final_result;
+
+            analysis_port.write(item);
+
+        end
+
+    endtask
+
+endclass
