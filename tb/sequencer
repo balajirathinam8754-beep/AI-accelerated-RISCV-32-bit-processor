@@ -1,0 +1,12 @@
+class riscv_soc_sequencer extends uvm_sequencer #(riscv_soc_sequence_item);
+
+    `uvm_component_utils(riscv_soc_sequencer)
+
+    function new(
+        string name = "riscv_soc_sequencer",
+        uvm_component parent = null
+    );
+        super.new(name, parent);
+    endfunction
+
+endclass
