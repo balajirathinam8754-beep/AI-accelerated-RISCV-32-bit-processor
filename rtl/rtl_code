@@ -1,1 +1,586 @@
 
+// ============================================================
+// AI ACCELERATED RISC-V SOC — RTL MODULES
+// FIXED FOR CADENCE XCELIUM 15.20 (irun)
+// All automatic variables removed; all logic declared at module level
+// ============================================================
+
+
+// ============================================================
+// 1. BOOTH MULTIPLIER
+// ============================================================
+module booth_multiplier (
+    input  logic signed [31:0] multiplicand,
+    input  logic signed [31:0] multiplier,
+    output logic signed [63:0] product
+);
+    integer i;
+    logic signed [63:0] A;
+    logic signed [31:0] Q;
+    logic signed [31:0] M;
+    logic               Q_1;
+
+    always_comb begin
+        A   = 64'sd0;
+        Q   = multiplier;
+        M   = multiplicand;
+        Q_1 = 1'b0;
+        for (i = 0; i < 32; i = i + 1) begin
+            case ({Q[0], Q_1})
+                2'b01:   A = A + {{32{M[31]}}, M};
+                2'b10:   A = A - {{32{M[31]}}, M};
+                default: A = A;
+            endcase
+            {A, Q, Q_1} = {A, Q, Q_1} >>> 1;
+        end
+        product = {A[31:0], Q};
+    end
+endmodule
+
+
+// ============================================================
+// 2. MAC UNIT
+// ============================================================
+module MAC_UNIT (
+    input  logic        clock,
+    input  logic        reset,
+    input  logic        enable,
+    input  logic [7:0]  a,
+    input  logic [7:0]  b,
+    output logic [31:0] result
+);
+    always_ff @(posedge clock or posedge reset) begin
+        if (reset)
+            result <= 32'd0;
+        else if (enable)
+            result <= result + ({{24{1'b0}}, a} * {{24{1'b0}}, b});
+    end
+endmodule
+
+
+// ============================================================
+// 3. AI MAC ARRAY
+// ============================================================
+module AI_MAC_ARRAY (
+    input  logic        clock,
+    input  logic        reset,
+    input  logic        enable,
+    input  logic [7:0]  a0, a1, a2, a3,
+    input  logic [7:0]  b0, b1, b2, b3,
+    output logic [31:0] final_sum
+);
+    logic [31:0] m0, m1, m2, m3;
+
+    MAC_UNIT mac0(.clock(clock),.reset(reset),.enable(enable),.a(a0),.b(b0),.result(m0));
+    MAC_UNIT mac1(.clock(clock),.reset(reset),.enable(enable),.a(a1),.b(b1),.result(m1));
+    MAC_UNIT mac2(.clock(clock),.reset(reset),.enable(enable),.a(a2),.b(b2),.result(m2));
+    MAC_UNIT mac3(.clock(clock),.reset(reset),.enable(enable),.a(a3),.b(b3),.result(m3));
+
+    assign final_sum = m0 + m1 + m2 + m3;
+endmodule
+
+
+// ============================================================
+// 4. SOFTMAX APPROXIMATION UNIT
+//    FIX: All variables at module level — no 'automatic' inside always_comb
+// ============================================================
+module SOFTMAX_APPROX (
+    input  logic signed [15:0] s0, s1, s2, s3,
+    output logic        [7:0]  w0, w1, w2, w3
+);
+    logic signed [15:0] mx01, mx23, mx_all;
+    logic signed [15:0] d0, d1, d2, d3;
+    logic        [7:0]  e0, e1, e2, e3;
+    logic        [9:0]  sum_e;
+
+    always_comb begin
+        // Step 1: max
+        mx01   = (s0 > s1)    ? s0   : s1;
+        mx23   = (s2 > s3)    ? s2   : s3;
+        mx_all = (mx01 > mx23) ? mx01 : mx23;
+
+        // Step 2: shifted difference from max
+        d0 = s0 - mx_all + 16'sd128;
+        d1 = s1 - mx_all + 16'sd128;
+        d2 = s2 - mx_all + 16'sd128;
+        d3 = s3 - mx_all + 16'sd128;
+
+        // Step 3: clip to [1,255]
+        e0 = (d0 < 16'sd1) ? 8'd1 : (d0 > 16'sd255) ? 8'd255 : d0[7:0];
+        e1 = (d1 < 16'sd1) ? 8'd1 : (d1 > 16'sd255) ? 8'd255 : d1[7:0];
+        e2 = (d2 < 16'sd1) ? 8'd1 : (d2 > 16'sd255) ? 8'd255 : d2[7:0];
+        e3 = (d3 < 16'sd1) ? 8'd1 : (d3 > 16'sd255) ? 8'd255 : d3[7:0];
+
+        // Step 4: sum of exp approximations
+        sum_e = {2'b00,e0} + {2'b00,e1} + {2'b00,e2} + {2'b00,e3};
+
+        // Step 5: normalise  w = (e * 256) / sum_e
+        w0 = {e0, 8'd0} / sum_e;
+        w1 = {e1, 8'd0} / sum_e;
+        w2 = {e2, 8'd0} / sum_e;
+        w3 = {e3, 8'd0} / sum_e;
+    end
+endmodule
+
+
+// ============================================================
+// 5. ATTENTION ENGINE  (3-stage pipeline)
+// ============================================================
+module ATTENTION_ENGINE (
+    input  logic        clock,
+    input  logic        reset,
+    input  logic        attn_start,
+
+    input  logic [7:0]  q0,  q1,  q2,  q3,
+
+    input  logic [7:0]  k00, k01, k02, k03,
+    input  logic [7:0]  k10, k11, k12, k13,
+    input  logic [7:0]  k20, k21, k22, k23,
+    input  logic [7:0]  k30, k31, k32, k33,
+
+    input  logic [7:0]  v00, v01, v02, v03,
+    input  logic [7:0]  v10, v11, v12, v13,
+    input  logic [7:0]  v20, v21, v22, v23,
+    input  logic [7:0]  v30, v31, v32, v33,
+
+    output logic [31:0] attn_out,
+    output logic        attn_done
+);
+    // Stage 1: QK dot products
+    logic signed [15:0] score0_raw, score1_raw, score2_raw, score3_raw;
+    logic signed [15:0] score0_r,   score1_r,   score2_r,   score3_r;
+    logic               stage1_valid;
+
+    assign score0_raw = $signed({1'b0,q0})*$signed({1'b0,k00})
+                      + $signed({1'b0,q1})*$signed({1'b0,k01})
+                      + $signed({1'b0,q2})*$signed({1'b0,k02})
+                      + $signed({1'b0,q3})*$signed({1'b0,k03});
+
+    assign score1_raw = $signed({1'b0,q0})*$signed({1'b0,k10})
+                      + $signed({1'b0,q1})*$signed({1'b0,k11})
+                      + $signed({1'b0,q2})*$signed({1'b0,k12})
+                      + $signed({1'b0,q3})*$signed({1'b0,k13});
+
+    assign score2_raw = $signed({1'b0,q0})*$signed({1'b0,k20})
+                      + $signed({1'b0,q1})*$signed({1'b0,k21})
+                      + $signed({1'b0,q2})*$signed({1'b0,k22})
+                      + $signed({1'b0,q3})*$signed({1'b0,k23});
+
+    assign score3_raw = $signed({1'b0,q0})*$signed({1'b0,k30})
+                      + $signed({1'b0,q1})*$signed({1'b0,k31})
+                      + $signed({1'b0,q2})*$signed({1'b0,k32})
+                      + $signed({1'b0,q3})*$signed({1'b0,k33});
+
+    always_ff @(posedge clock or posedge reset) begin
+        if (reset) begin
+            score0_r     <= 16'sd0;
+            score1_r     <= 16'sd0;
+            score2_r     <= 16'sd0;
+            score3_r     <= 16'sd0;
+            stage1_valid <= 1'b0;
+        end else begin
+            stage1_valid <= attn_start;
+            score0_r     <= score0_raw >>> 2;
+            score1_r     <= score1_raw >>> 2;
+            score2_r     <= score2_raw >>> 2;
+            score3_r     <= score3_raw >>> 2;
+        end
+    end
+
+    // Stage 2: softmax
+    logic [7:0] w0, w1, w2, w3;
+    logic [7:0] w0_r, w1_r, w2_r, w3_r;
+    logic       stage2_valid;
+
+    SOFTMAX_APPROX sm (
+        .s0(score0_r), .s1(score1_r),
+        .s2(score2_r), .s3(score3_r),
+        .w0(w0), .w1(w1), .w2(w2), .w3(w3)
+    );
+
+    always_ff @(posedge clock or posedge reset) begin
+        if (reset) begin
+            w0_r <= 8'd0; w1_r <= 8'd0; w2_r <= 8'd0; w3_r <= 8'd0;
+            stage2_valid <= 1'b0;
+        end else begin
+            stage2_valid <= stage1_valid;
+            w0_r <= w0; w1_r <= w1; w2_r <= w2; w3_r <= w3;
+        end
+    end
+
+    // Stage 3: weighted sum of values
+    logic [31:0] out_raw;
+
+    assign out_raw = ({24'd0,w0_r} * {24'd0,v00})
+                   + ({24'd0,w1_r} * {24'd0,v10})
+                   + ({24'd0,w2_r} * {24'd0,v20})
+                   + ({24'd0,w3_r} * {24'd0,v30});
+
+    always_ff @(posedge clock or posedge reset) begin
+        if (reset) begin
+            attn_out  <= 32'd0;
+            attn_done <= 1'b0;
+        end else begin
+            attn_done <= stage2_valid;
+            if (stage2_valid)
+                attn_out <= out_raw >> 8;
+        end
+    end
+endmodule
+
+
+// ============================================================
+// 6. ALU DECODER
+// ============================================================
+module ALU_DECODER (
+    input  logic [6:0] opcode,
+    input  logic [2:0] funct3,
+    input  logic [6:0] funct7,
+    output logic [3:0] alu_control,
+    output logic       use_ai_mac,
+    output logic       use_attn
+);
+    localparam [3:0]
+        ALU_AND  = 4'b0000,
+        ALU_OR   = 4'b0001,
+        ALU_ADD  = 4'b0010,
+        ALU_SUB  = 4'b0100,
+        ALU_MUL  = 4'b0110,
+        ALU_XOR  = 4'b0111,
+        ALU_SLL  = 4'b1000,
+        ALU_SRL  = 4'b1001,
+        ALU_SRA  = 4'b1010,
+        ALU_SLT  = 4'b1011,
+        ALU_SLTU = 4'b1100,
+        ALU_ATTN = 4'b1111;
+
+    always_comb begin
+        alu_control = ALU_ADD;
+        use_ai_mac  = 1'b0;
+        use_attn    = 1'b0;
+
+        case (opcode)
+            7'b0110011: begin
+                case ({funct7, funct3})
+                    10'b0000000_000: alu_control = ALU_ADD;
+                    10'b0100000_000: alu_control = ALU_SUB;
+                    10'b0000000_111: alu_control = ALU_AND;
+                    10'b0000000_110: alu_control = ALU_OR;
+                    10'b0000001_000: begin alu_control = ALU_MUL; use_ai_mac = 1'b1; end
+                    10'b0000000_100: alu_control = ALU_XOR;
+                    10'b0000000_001: alu_control = ALU_SLL;
+                    10'b0000000_101: alu_control = ALU_SRL;
+                    10'b0100000_101: alu_control = ALU_SRA;
+                    10'b0000000_010: alu_control = ALU_SLT;
+                    10'b0000000_011: alu_control = ALU_SLTU;
+                    default:         alu_control = ALU_ADD;
+                endcase
+            end
+            7'b0010011: begin
+                case (funct3)
+                    3'b000:  alu_control = ALU_ADD;
+                    3'b111:  alu_control = ALU_AND;
+                    3'b110:  alu_control = ALU_OR;
+                    3'b100:  alu_control = ALU_XOR;
+                    3'b001:  alu_control = ALU_SLL;
+                    3'b101:  alu_control = funct7[5] ? ALU_SRA : ALU_SRL;
+                    3'b010:  alu_control = ALU_SLT;
+                    3'b011:  alu_control = ALU_SLTU;
+                    default: alu_control = ALU_ADD;
+                endcase
+            end
+            7'b0000011,
+            7'b0100011: alu_control = ALU_ADD;
+            7'b0001011: begin alu_control = ALU_MUL;  use_ai_mac = 1'b1; end
+            7'b0001111: begin alu_control = ALU_ATTN; use_attn   = 1'b1; end
+            default:    alu_control = ALU_ADD;
+        endcase
+    end
+endmodule
+
+
+// ============================================================
+// 7. ALU
+// ============================================================
+module ALU (
+    input  logic        clock,
+    input  logic        reset,
+    input  logic [31:0] in1,
+    input  logic [31:0] in2,
+    input  logic [3:0]  alu_control,
+    input  logic        use_ai_mac,
+    input  logic        use_attn,
+
+    input  logic [7:0]  q0,  q1,  q2,  q3,
+    input  logic [7:0]  k00, k01, k02, k03,
+    input  logic [7:0]  k10, k11, k12, k13,
+    input  logic [7:0]  k20, k21, k22, k23,
+    input  logic [7:0]  k30, k31, k32, k33,
+    input  logic [7:0]  v00, v01, v02, v03,
+    input  logic [7:0]  v10, v11, v12, v13,
+    input  logic [7:0]  v20, v21, v22, v23,
+    input  logic [7:0]  v30, v31, v32, v33,
+
+    output logic [31:0] alu_result,
+    output logic        zero_flag,
+    output logic        overflow,
+    output logic        attn_done
+);
+    localparam [3:0]
+        ALU_AND  = 4'b0000,
+        ALU_OR   = 4'b0001,
+        ALU_ADD  = 4'b0010,
+        ALU_SUB  = 4'b0100,
+        ALU_MUL  = 4'b0110,
+        ALU_XOR  = 4'b0111,
+        ALU_SLL  = 4'b1000,
+        ALU_SRL  = 4'b1001,
+        ALU_SRA  = 4'b1010,
+        ALU_SLT  = 4'b1011,
+        ALU_SLTU = 4'b1100,
+        ALU_ATTN = 4'b1111;
+
+    logic signed [63:0] booth_result;
+    logic        [31:0] mac_result;
+    logic        [31:0] attn_result;
+
+    booth_multiplier bm (
+        .multiplicand($signed(in1)),
+        .multiplier  ($signed(in2)),
+        .product     (booth_result)
+    );
+
+    AI_MAC_ARRAY ai_mac (
+        .clock(clock), .reset(reset), .enable(use_ai_mac),
+        .a0(in1[7:0]),   .a1(in1[15:8]),
+        .a2(in1[23:16]), .a3(in1[31:24]),
+        .b0(in2[7:0]),   .b1(in2[15:8]),
+        .b2(in2[23:16]), .b3(in2[31:24]),
+        .final_sum(mac_result)
+    );
+
+    ATTENTION_ENGINE attn_eng (
+        .clock(clock), .reset(reset), .attn_start(use_attn),
+        .q0(q0),.q1(q1),.q2(q2),.q3(q3),
+        .k00(k00),.k01(k01),.k02(k02),.k03(k03),
+        .k10(k10),.k11(k11),.k12(k12),.k13(k13),
+        .k20(k20),.k21(k21),.k22(k22),.k23(k23),
+        .k30(k30),.k31(k31),.k32(k32),.k33(k33),
+        .v00(v00),.v01(v01),.v02(v02),.v03(v03),
+        .v10(v10),.v11(v11),.v12(v12),.v13(v13),
+        .v20(v20),.v21(v21),.v22(v22),.v23(v23),
+        .v30(v30),.v31(v31),.v32(v32),.v33(v33),
+        .attn_out (attn_result),
+        .attn_done(attn_done)
+    );
+
+    always_comb begin
+        alu_result = 32'd0;
+        overflow   = 1'b0;
+        case (alu_control)
+            ALU_AND:  alu_result = in1 & in2;
+            ALU_OR:   alu_result = in1 | in2;
+            ALU_XOR:  alu_result = in1 ^ in2;
+            ALU_SLL:  alu_result = in1 << in2[4:0];
+            ALU_SRL:  alu_result = in1 >> in2[4:0];
+            ALU_SRA:  alu_result = $signed(in1) >>> in2[4:0];
+            ALU_SLT:  alu_result = ($signed(in1) < $signed(in2)) ? 32'd1 : 32'd0;
+            ALU_SLTU: alu_result = (in1 < in2) ? 32'd1 : 32'd0;
+            ALU_ADD: begin
+                alu_result = in1 + in2;
+                overflow   = (in1[31]==in2[31]) && (alu_result[31]!=in1[31]);
+            end
+            ALU_SUB: begin
+                alu_result = in1 - in2;
+                overflow   = (in1[31]!=in2[31]) && (alu_result[31]!=in1[31]);
+            end
+            ALU_MUL:  alu_result = use_ai_mac ? mac_result : booth_result[31:0];
+            ALU_ATTN: alu_result = attn_result;
+            default:  alu_result = 32'd0;
+        endcase
+        zero_flag = (alu_result == 32'd0);
+    end
+endmodule
+
+
+// ============================================================
+// 8. REGISTER FILE
+// ============================================================
+module REG_FILE (
+    input  logic        clock,
+    input  logic        reset,
+    input  logic [4:0]  read_reg_num1,
+    output logic [31:0] read_data1,
+    input  logic [4:0]  read_reg_num2,
+    output logic [31:0] read_data2,
+    input  logic [4:0]  write_reg,
+    input  logic [31:0] write_data,
+    input  logic        regwrite,
+    output logic [31:0] x3_out
+);
+    logic [31:0] registers [0:31];
+    integer k;
+
+    assign read_data1 = (read_reg_num1==5'd0) ? 32'd0 : registers[read_reg_num1];
+    assign read_data2 = (read_reg_num2==5'd0) ? 32'd0 : registers[read_reg_num2];
+    assign x3_out     = registers[3];
+
+    always_ff @(posedge clock or posedge reset) begin
+        if (reset) begin
+            for (k=0; k<32; k=k+1) registers[k] <= 32'd0;
+        end else begin
+            if (regwrite && (write_reg != 5'd0))
+                registers[write_reg] <= write_data;
+        end
+    end
+endmodule
+
+
+// ============================================================
+// 9. DATA MEMORY
+// ============================================================
+module DATA_MEM (
+    input  logic        clock,
+    input  logic        memwrite,
+    input  logic        memread,
+    input  logic [31:0] addr,
+    input  logic [31:0] write_data,
+    output logic [31:0] read_data
+);
+    logic [31:0] memory [0:255];
+
+    always_ff @(posedge clock) begin
+        if (memwrite) memory[addr[9:2]] <= write_data;
+    end
+    always_comb begin
+        read_data = memread ? memory[addr[9:2]] : 32'd0;
+    end
+endmodule
+
+
+// ============================================================
+// 10. IMMEDIATE GENERATOR
+// ============================================================
+module IMM_GEN (
+    input  logic [31:0] instr,
+    output logic [31:0] imm_out
+);
+    always_comb begin
+        case (instr[6:0])
+            7'b0000011,
+            7'b0010011,
+            7'b1100111: imm_out = {{20{instr[31]}}, instr[31:20]};
+            7'b0100011: imm_out = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+            7'b1100011: imm_out = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
+            7'b0110111,
+            7'b0010111: imm_out = {instr[31:12], 12'd0};
+            7'b1101111: imm_out = {{11{instr[31]}}, instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
+            default:    imm_out = {{20{instr[31]}}, instr[31:20]};
+        endcase
+    end
+endmodule
+
+
+// ============================================================
+// 11. INSTRUCTION MEMORY
+// ============================================================
+module INST_MEM (
+    input  logic [31:0] addr,
+    output logic [31:0] data
+);
+    always_comb begin
+        case (addr[9:2])
+            8'd0: data = 32'h00500093; // addi x1, x0, 5
+            8'd1: data = 32'h00A00113; // addi x2, x0, 10
+            8'd2: data = 32'h002081B3; // add  x3, x1, x2  -> x3=15
+            8'd3: data = 32'h02208233; // mul  x4, x1, x2  -> x4=50
+            8'd4: data = 32'h0000006F; // jal  x0, 0 (halt)
+            default: data = 32'h00000013; // nop
+        endcase
+    end
+endmodule
+
+
+// ============================================================
+// 12. CONTROL UNIT
+// ============================================================
+module CONTROL (
+    input  logic [6:0] opcode,
+    output logic       regwrite,
+    output logic       alu_src,
+    output logic       memread,
+    output logic       memwrite,
+    output logic       branch,
+    output logic       jal
+);
+    always_comb begin
+        regwrite = 1'b0; alu_src  = 1'b0;
+        memread  = 1'b0; memwrite = 1'b0;
+        branch   = 1'b0; jal      = 1'b0;
+        case (opcode)
+            7'b0110011: begin regwrite=1'b1; end
+            7'b0010011: begin regwrite=1'b1; alu_src=1'b1; end
+            7'b0000011: begin regwrite=1'b1; alu_src=1'b1; memread=1'b1; end
+            7'b0100011: begin alu_src=1'b1; memwrite=1'b1; end
+            7'b1100011: begin branch=1'b1; end
+            7'b1101111: begin regwrite=1'b1; jal=1'b1; end
+            7'b0001011: begin regwrite=1'b1; end
+            7'b0001111: begin regwrite=1'b1; end
+            default: ;
+        endcase
+    end
+endmodule
+
+
+// ============================================================
+// 13. FORWARDING UNIT
+// ============================================================
+module FORWARDING_UNIT (
+    input  logic [4:0] id_ex_rs1,
+    input  logic [4:0] id_ex_rs2,
+    input  logic [4:0] ex_mem_rd,
+    input  logic       ex_mem_regwrite,
+    input  logic [4:0] mem_wb_rd,
+    input  logic       mem_wb_regwrite,
+    output logic [1:0] forwardA,
+    output logic [1:0] forwardB
+);
+    always_comb begin
+        forwardA = 2'b00;
+        forwardB = 2'b00;
+        if (ex_mem_regwrite && (ex_mem_rd!=5'd0) && (ex_mem_rd==id_ex_rs1))
+            forwardA = 2'b10;
+        else if (mem_wb_regwrite && (mem_wb_rd!=5'd0) && (mem_wb_rd==id_ex_rs1))
+            forwardA = 2'b01;
+
+        if (ex_mem_regwrite && (ex_mem_rd!=5'd0) && (ex_mem_rd==id_ex_rs2))
+            forwardB = 2'b10;
+        else if (mem_wb_regwrite && (mem_wb_rd!=5'd0) && (mem_wb_rd==id_ex_rs2))
+            forwardB = 2'b01;
+    end
+endmodule
+
+
+// ============================================================
+// 14. HAZARD DETECTION UNIT
+// ============================================================
+module HAZARD_UNIT (
+    input  logic [4:0] if_id_rs1,
+    input  logic [4:0] if_id_rs2,
+    input  logic [4:0] id_ex_rd,
+    input  logic       id_ex_memread,
+    output logic       stall,
+    output logic       pc_write
+);
+    always_comb begin
+        if (id_ex_memread &&
+            ((id_ex_rd==if_id_rs1) || (id_ex_rd==if_id_rs2))) begin
+            stall    = 1'b1;
+            pc_write = 1'b0;
+        end else begin
+            stall    = 1'b0;
+            pc_write = 1'b1;
+        end
+    end
+endmodule
+
