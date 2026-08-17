@@ -1,0 +1,6 @@
+interface riscv_soc_if(input logic clock);
+
+    logic reset;
+    logic [31:0] final_result;
+
+endinterface
